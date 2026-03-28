@@ -1,54 +1,42 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-*.egg
-*.egg-info/
-dist/
-build/
-.eggs/
-
 # Virtual environment
 wp_env/
 venv/
 env/
 .venv/
 
-# Environment variables — NEVER commit these
+# Environment files — NEVER commit
 .env
 .env.*
+.env.save
 !.env.example
 
-# Database
-*.db
-*.sqlite3
+# Test/debug scripts
+debug_*.py
+test_*.py
+seed_*.py
+reset_*.py
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
 
 # Logs
 *.log
-logs/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Test files (keep in git if you want)
-# test_*.py
-# seed_*.py
-debug_*.py
-reset_*.py
+# IDE
+.vscode/
+.idea/
 
 # Uploads
 uploads/
 media/
 
-# Coverage
-.coverage
-htmlcov/
-.pytest_cache/
+# Vercel (backend shouldn't deploy to Vercel)
+vercel.json
