@@ -38,5 +38,3 @@ Thumbs.db
 uploads/
 media/
 
-# Vercel (backend shouldn't deploy to Vercel)
-vercel.json
