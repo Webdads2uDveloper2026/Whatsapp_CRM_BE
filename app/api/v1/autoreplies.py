@@ -10,7 +10,7 @@ from fastapi  import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 
 from app.models.tenant     import Tenant
-from app.core.dependencies import get_current_tenant, get_active_tenant
+from app.core.dependencies import get_current_tenant, get_active_tenant, get_tenant_from_token, get_active_tenant_from_token
 
 router = APIRouter(prefix="/autoreplies", tags=["autoreplies"])
 
@@ -51,7 +51,7 @@ class AutoReplyUpdate(BaseModel):
 
 # ── CRUD endpoints ────────────────────────────────────────────────────────────
 @router.get("")
-async def list_autoreplies(tenant: Tenant = Depends(get_current_tenant)):
+async def list_autoreplies(tenant: Tenant = Depends(get_tenant_from_token)):
     from app.database import db
     docs = await db.autoreplies.find(
         {"tenant_id": str(tenant.id)}
@@ -60,7 +60,7 @@ async def list_autoreplies(tenant: Tenant = Depends(get_current_tenant)):
 
 
 @router.post("")
-async def create_autoreply(body: AutoReplyCreate, tenant: Tenant = Depends(get_active_tenant)):
+async def create_autoreply(body: AutoReplyCreate, tenant: Tenant = Depends(get_active_tenant_from_token)):
     from app.database import db
     now = datetime.utcnow()
     doc = {
@@ -81,7 +81,7 @@ async def create_autoreply(body: AutoReplyCreate, tenant: Tenant = Depends(get_a
 
 
 @router.get("/{rule_id}")
-async def get_autoreply(rule_id: str, tenant: Tenant = Depends(get_current_tenant)):
+async def get_autoreply(rule_id: str, tenant: Tenant = Depends(get_tenant_from_token)):
     from app.database import db
     doc = await db.autoreplies.find_one({"_id": ObjectId(rule_id), "tenant_id": str(tenant.id)})
     if not doc:
@@ -90,7 +90,7 @@ async def get_autoreply(rule_id: str, tenant: Tenant = Depends(get_current_tenan
 
 
 @router.patch("/{rule_id}/toggle")
-async def toggle_autoreply(rule_id: str, tenant: Tenant = Depends(get_active_tenant)):
+async def toggle_autoreply(rule_id: str, tenant: Tenant = Depends(get_active_tenant_from_token)):
     from app.database import db
     doc = await db.autoreplies.find_one({"_id": ObjectId(rule_id), "tenant_id": str(tenant.id)})
     if not doc:
@@ -104,7 +104,7 @@ async def toggle_autoreply(rule_id: str, tenant: Tenant = Depends(get_active_ten
 
 
 @router.patch("/{rule_id}")
-async def update_autoreply(rule_id: str, body: AutoReplyUpdate, tenant: Tenant = Depends(get_active_tenant)):
+async def update_autoreply(rule_id: str, body: AutoReplyUpdate, tenant: Tenant = Depends(get_active_tenant_from_token)):
     from app.database import db
     upd = {"updated_at": datetime.utcnow()}
     if body.name       is not None: upd["name"]       = body.name
@@ -123,7 +123,7 @@ async def update_autoreply(rule_id: str, body: AutoReplyUpdate, tenant: Tenant =
 
 
 @router.delete("/{rule_id}")
-async def delete_autoreply(rule_id: str, tenant: Tenant = Depends(get_active_tenant)):
+async def delete_autoreply(rule_id: str, tenant: Tenant = Depends(get_active_tenant_from_token)):
     from app.database import db
     r = await db.autoreplies.delete_one({"_id": ObjectId(rule_id), "tenant_id": str(tenant.id)})
     if r.deleted_count == 0:

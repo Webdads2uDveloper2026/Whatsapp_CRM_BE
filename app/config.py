@@ -27,7 +27,10 @@ class Settings(BaseSettings):
     meta_phone_number_id: str = ""
     meta_access_token:    str = ""
     meta_api_version:     str = "v22.0"
-    meta_config_id:       str = ""
+    meta_config_id:         str = ""
+    meta_redirect_uri:      str = "https://www.facebook.com/"
+    meta_system_user_id:    str = ""
+    meta_system_user_token: str = ""
 
     # ── Webhooks ──────────────────────────────────────────────────────────
     webhook_base_url:     str = ""

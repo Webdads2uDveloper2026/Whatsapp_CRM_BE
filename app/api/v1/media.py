@@ -4,7 +4,7 @@ app/api/v1/media.py — Upload media to Meta for use in template headers
 import httpx
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
 from app.models.tenant import Tenant
-from app.core.dependencies import get_active_tenant
+from app.core.dependencies import get_active_tenant, get_active_tenant_from_token
 from app.config import get_settings
 
 router   = APIRouter(prefix="/media", tags=["media"])
@@ -21,28 +21,19 @@ ALLOWED = {
 async def upload_media(
     file:   UploadFile = File(...),
     type:   str        = Form("image"),
-    tenant: Tenant     = Depends(get_active_tenant),
+    tenant: Tenant     = Depends(get_active_tenant_from_token),
 ):
     """
     Upload media to Meta's servers.
     Returns: { "id": "meta_media_id", "url": "optional_url" }
     Used for template header images/videos/documents.
     """
-    from app.core.security import decrypt_token
-
-    # Get token
-    token = None
-    if tenant.encrypted_access_token:
-        try:
-            token = decrypt_token(tenant.encrypted_access_token)
-        except Exception:
-            pass
-    token = token or settings.meta_access_token
-
-    phone_id = tenant.phone_number_id or settings.meta_phone_number_id
+    from app.services.whatsapp import resolve_token
+    token    = resolve_token(tenant)
+    phone_id = (tenant.phone_number_id or settings.meta_phone_number_id or "").strip()
 
     if not token or not phone_id:
-        raise HTTPException(400, "WhatsApp not configured")
+        raise HTTPException(400, "WhatsApp not configured — set META_SYSTEM_USER_TOKEN and complete onboarding")
 
     # Validate file type
     content_type = file.content_type or "application/octet-stream"

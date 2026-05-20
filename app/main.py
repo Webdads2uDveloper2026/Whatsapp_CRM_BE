@@ -99,6 +99,8 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await connect_db()
+    from app.api.v1.seed import run_all_seeds
+    await run_all_seeds()
     yield
     await close_db()
 
@@ -147,9 +149,12 @@ _include("app.api.v1.conversations")
 _include("app.api.v1.media")
 _include("app.api.v1.onboarding")
 _include("app.api.v1.templates")
+_include("app.api.v1.flows")
 _include("app.api.v1.webhook")
 _include("app.api.v1.other_routes")
 _include("app.api.v1.google_auth")
+_include("app.api.v1.roles")
+_include("app.api.v1.super_admin")
 
 # WebSocket — no prefix
 try:

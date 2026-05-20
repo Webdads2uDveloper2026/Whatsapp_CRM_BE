@@ -6,7 +6,7 @@
 # from fastapi  import APIRouter, HTTPException, Depends, Query
 # from pydantic import BaseModel, Field
 # from app.models.tenant    import Tenant
-# from app.core.dependencies import get_current_tenant, get_active_tenant
+# from app.core.dependencies import get_current_tenant, get_active_tenant, get_tenant_from_token, get_active_tenant_from_token
 
 # router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -46,7 +46,7 @@
 # # ─── List conversations ────────────────────────────────────────────────────────
 # @router.get("")
 # async def list_conversations(
-#     tenant: Tenant = Depends(get_current_tenant),
+#     tenant: Tenant = Depends(get_tenant_from_token),
 #     page:   int    = Query(1, ge=1),
 #     limit:  int    = Query(50, ge=1, le=100),
 #     status: str    = Query(None),
@@ -91,7 +91,7 @@
 
 # # ─── Get single conversation ───────────────────────────────────────────────────
 # @router.get("/{cid}")
-# async def get_conversation(cid: str, tenant: Tenant = Depends(get_current_tenant)):
+# async def get_conversation(cid: str, tenant: Tenant = Depends(get_tenant_from_token)):
 #     from app.database import db
 #     from bson import ObjectId
 #     tid = str(tenant.id)
@@ -118,7 +118,7 @@
 # @router.get("/{cid}/messages")
 # async def list_messages(
 #     cid:    str,
-#     tenant: Tenant = Depends(get_current_tenant),
+#     tenant: Tenant = Depends(get_tenant_from_token),
 #     page:   int    = Query(1, ge=1),
 #     limit:  int    = Query(50, ge=1, le=100),
 # ):
@@ -178,7 +178,7 @@
 # async def send_message(
 #     cid:    str,
 #     body:   SendMessageRequest,
-#     tenant: Tenant = Depends(get_active_tenant),
+#     tenant: Tenant = Depends(get_active_tenant_from_token),
 # ):
 #     from app.database import db
 #     from app.services.whatsapp import get_wa_client, build_send_components
@@ -396,7 +396,7 @@
 # async def update_conversation(
 #     cid:    str,
 #     body:   dict,
-#     tenant: Tenant = Depends(get_active_tenant),
+#     tenant: Tenant = Depends(get_active_tenant_from_token),
 # ):
 #     from app.database import db
 #     from bson import ObjectId
@@ -420,7 +420,7 @@
 # async def delete_message(
 #     cid:    str,
 #     mid:    str,
-#     tenant: Tenant = Depends(get_active_tenant),
+#     tenant: Tenant = Depends(get_active_tenant_from_token),
 # ):
 #     from app.database import db
 #     from bson import ObjectId
@@ -441,7 +441,7 @@
 # @router.post("/start")
 # async def start_conversation(
 #     body:   StartConvoRequest,
-#     tenant: Tenant = Depends(get_active_tenant),
+#     tenant: Tenant = Depends(get_active_tenant_from_token),
 # ):
 #     """
 #     Find or create an open conversation for wa_id.
@@ -571,7 +571,7 @@ from typing   import Optional, List
 from fastapi  import APIRouter, HTTPException, Depends, Query
 from pydantic import BaseModel, Field
 from app.models.tenant    import Tenant
-from app.core.dependencies import get_current_tenant, get_active_tenant
+from app.core.dependencies import get_current_tenant, get_active_tenant, get_tenant_from_token, get_active_tenant_from_token
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -604,6 +604,15 @@ class SendMessageRequest(BaseModel):
     body_variables:  dict = Field(default_factory=dict)   # {"1":"John","2":"ORD-123"}
     buttons:         list = Field(default_factory=list)   # dynamic button values
 
+    # FLOW — interactive WhatsApp Flow message
+    flow_id:      str = ""   # Meta flow_id (from Graph API / Meta dashboard)
+    flow_token:   str = ""   # unique token per send; auto-generated if blank
+    flow_cta:     str = "Open"
+    flow_header:  str = ""
+    flow_body:    str = ""
+    flow_footer:  str = ""
+    flow_screen:  str = ""   # first screen ID (defaults to WELCOME)
+
     # Legacy support — old Inbox.jsx sent content: { body, template_name, ... }
     content: dict = Field(default_factory=dict)
 
@@ -611,7 +620,7 @@ class SendMessageRequest(BaseModel):
 # ─── List conversations ────────────────────────────────────────────────────────
 @router.get("")
 async def list_conversations(
-    tenant: Tenant = Depends(get_current_tenant),
+    tenant: Tenant = Depends(get_tenant_from_token),
     page:   int    = Query(1, ge=1),
     limit:  int    = Query(50, ge=1, le=100),
     status: str    = Query(None),
@@ -656,7 +665,7 @@ async def list_conversations(
 
 # ─── Get single conversation ───────────────────────────────────────────────────
 @router.get("/{cid}")
-async def get_conversation(cid: str, tenant: Tenant = Depends(get_current_tenant)):
+async def get_conversation(cid: str, tenant: Tenant = Depends(get_tenant_from_token)):
     from app.database import db
     from bson import ObjectId
     tid = str(tenant.id)
@@ -683,7 +692,7 @@ async def get_conversation(cid: str, tenant: Tenant = Depends(get_current_tenant
 @router.get("/{cid}/messages")
 async def list_messages(
     cid:    str,
-    tenant: Tenant = Depends(get_current_tenant),
+    tenant: Tenant = Depends(get_tenant_from_token),
     page:   int    = Query(1, ge=1),
     limit:  int    = Query(50, ge=1, le=100),
 ):
@@ -743,7 +752,7 @@ async def list_messages(
 async def send_message(
     cid:    str,
     body:   SendMessageRequest,
-    tenant: Tenant = Depends(get_active_tenant),
+    tenant: Tenant = Depends(get_active_tenant_from_token),
 ):
     from app.database import db
     from app.services.whatsapp import get_wa_client, build_send_components
@@ -884,6 +893,32 @@ async def send_message(
         resp = await client._post(f"{client.base}/{client.phone_id}/messages", payload)
         msg_content = {"url": link or mid, "caption": cap, "filename": fn}
 
+    # ── FLOW ──────────────────────────────────────────────────────────────────
+    elif body.msg_type == "flow":
+        if not body.flow_id.strip():
+            raise HTTPException(400, "flow_id is required")
+
+        import uuid
+        token = body.flow_token.strip() or str(uuid.uuid4())
+
+        resp = await client.send_flow(
+            to           = wa_id,
+            flow_id      = body.flow_id.strip(),
+            flow_token   = token,
+            cta_text     = body.flow_cta  or "Open",
+            header_text  = body.flow_header,
+            body_text    = body.flow_body  or "Tap the button below to get started.",
+            footer_text  = body.flow_footer,
+            first_screen = body.flow_screen,
+        )
+        msg_content = {
+            "flow_id":    body.flow_id,
+            "flow_token": token,
+            "cta":        body.flow_cta or "Open",
+            "header":     body.flow_header,
+            "body":       body.flow_body,
+        }
+
     else:
         raise HTTPException(400, f"Unsupported msg_type: {body.msg_type}")
 
@@ -898,6 +933,7 @@ async def send_message(
             132000: f"Template variable mismatch — check that variables match the approved template: {msg}",
             132001: "Template not found or not approved on Meta.",
             132005: f"Template body format error: {msg}",
+            133010: "Phone number not registered with WhatsApp Cloud API. Go to Settings → Channels and reconnect your WhatsApp number.",
         }
         raise HTTPException(400, ERRORS.get(code, f"WhatsApp error ({code}): {msg}"))
 
@@ -980,7 +1016,7 @@ async def send_message(
 async def update_conversation(
     cid:    str,
     body:   dict,
-    tenant: Tenant = Depends(get_active_tenant),
+    tenant: Tenant = Depends(get_active_tenant_from_token),
 ):
     from app.database import db
     from bson import ObjectId
@@ -1004,7 +1040,7 @@ async def update_conversation(
 async def delete_message(
     cid:    str,
     mid:    str,
-    tenant: Tenant = Depends(get_active_tenant),
+    tenant: Tenant = Depends(get_active_tenant_from_token),
 ):
     from app.database import db
     from bson import ObjectId
@@ -1025,7 +1061,7 @@ class StartConvoRequest(BaseModel):
 @router.post("/start")
 async def start_conversation(
     body:   StartConvoRequest,
-    tenant: Tenant = Depends(get_active_tenant),
+    tenant: Tenant = Depends(get_active_tenant_from_token),
 ):
     """
     Find or create an open conversation for wa_id.

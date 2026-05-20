@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, Query
 from app.models.tenant import Tenant
-from app.core.dependencies import get_current_tenant
+from app.core.dependencies import get_current_tenant, get_tenant_from_token
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
@@ -16,7 +16,7 @@ def get_db():
 
 @router.get("/overview")
 async def overview(
-    tenant: Tenant = Depends(get_current_tenant),
+    tenant: Tenant = Depends(get_tenant_from_token),
     days: int = Query(7, ge=1, le=90),
 ):
     db    = get_db()
@@ -48,7 +48,7 @@ async def overview(
 
 @router.get("/daily")
 async def daily(
-    tenant: Tenant = Depends(get_current_tenant),
+    tenant: Tenant = Depends(get_tenant_from_token),
     days: int = Query(30, ge=7, le=90),
 ):
     db    = get_db()

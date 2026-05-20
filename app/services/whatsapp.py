@@ -271,19 +271,86 @@ settings = get_settings()
 log      = logging.getLogger(__name__)
 
 
-def get_wa_client(tenant):
-    from app.core.security import decrypt_token
-    token = None
-    if getattr(tenant, 'encrypted_access_token', None):
+def resolve_token(tenant=None) -> str:
+    """
+    Single source of truth for Meta access token resolution.
+
+    Priority (WATI/Interakt-style):
+      1. META_SYSTEM_USER_TOKEN — platform-owned, never expires, works across all WABAs
+      2. Tenant encrypted_access_token — per-customer, expires in 60 days (fallback only)
+      3. META_ACCESS_TOKEN .env fallback — legacy last resort
+
+    Call this anywhere you need a token. Never read tokens directly from tenant or settings.
+    """
+    # 1. Platform system user — permanent
+    token = (settings.meta_system_user_token or "").strip() or None
+
+    # 2. Tenant stored token
+    if not token and tenant and getattr(tenant, 'encrypted_access_token', None):
         try:
+            from app.core.security import decrypt_token
             token = decrypt_token(tenant.encrypted_access_token)
         except Exception:
             pass
-    token    = token or settings.meta_access_token
-    phone_id = getattr(tenant, 'phone_number_id', None) or settings.meta_phone_number_id
-    version  = getattr(settings, 'meta_api_version', None) or 'v22.0'
-    if not token:   raise ValueError("No Meta access token configured")
-    if not phone_id: raise ValueError("No Meta phone number ID configured")
+
+    # 3. .env fallback
+    if not token:
+        token = (settings.meta_access_token or "").strip() or None
+
+    return token or ""
+
+
+def resolve_waba_creds(tenant) -> tuple:
+    """
+    Returns (token, waba_id) for WABA-level Graph API calls:
+    templates, phone_numbers, subscriptions, webhook registration.
+
+    Validates that waba_id and phone_number_id are not swapped
+    (a common onboarding bug).
+    """
+    from fastapi import HTTPException
+    token   = resolve_token(tenant)
+    waba_id = (getattr(tenant, 'waba_id', None) or settings.meta_waba_id or "").strip()
+
+    if not token:
+        raise HTTPException(400,
+            "No Meta access token configured. "
+            "Set META_SYSTEM_USER_TOKEN in your backend .env and restart."
+        )
+    if not waba_id:
+        raise HTTPException(400,
+            "No WABA ID configured for this account. "
+            "Complete the WhatsApp onboarding first."
+        )
+
+    phone_number_id = (getattr(tenant, 'phone_number_id', None) or "").strip()
+    if phone_number_id and waba_id == phone_number_id:
+        raise HTTPException(400,
+            f"waba_id ({waba_id}) equals phone_number_id — IDs are swapped. "
+            "Disconnect and reconnect your WhatsApp account."
+        )
+    return token, waba_id
+
+
+def get_wa_client(tenant):
+    """
+    Returns a WhatsAppClient scoped to the tenant's phone number.
+    Uses resolve_token() so the system user token is always preferred.
+    """
+    token    = resolve_token(tenant)
+    phone_id = (getattr(tenant, 'phone_number_id', None) or settings.meta_phone_number_id or "").strip()
+    version  = (getattr(settings, 'meta_api_version', None) or 'v22.0').strip()
+
+    if not token:
+        raise ValueError(
+            "No Meta access token configured. "
+            "Set META_SYSTEM_USER_TOKEN in .env and restart the server."
+        )
+    if not phone_id:
+        raise ValueError(
+            "No phone_number_id found for this tenant. "
+            "Complete WhatsApp onboarding first."
+        )
     return WhatsAppClient(token, phone_id, version)
 
 
@@ -392,6 +459,57 @@ class WhatsAppClient:
             'to': to, 'type': 'reaction',
             'reaction': {'message_id': message_id, 'emoji': emoji},
         })
+
+    async def send_flow(
+        self,
+        to:           str,
+        flow_id:      str,
+        flow_token:   str,
+        cta_text:     str  = 'Open',
+        header_text:  str  = '',
+        body_text:    str  = 'Tap the button below to get started.',
+        footer_text:  str  = '',
+        first_screen: str  = '',
+        flow_data:    dict = None,
+    ) -> dict:
+        """
+        Send a published WhatsApp Flow as an interactive message.
+        Docs: https://developers.facebook.com/docs/whatsapp/flows/sending-flows
+        """
+        import re
+        safe_screen = re.sub(r'[^A-Z0-9_]', '_', (first_screen or 'WELCOME').upper())
+
+        parameters: dict = {
+            'flow_message_version': '3',
+            'flow_token':           flow_token,
+            'flow_id':              flow_id,
+            'flow_cta':             cta_text,
+            'flow_action':          'navigate',
+            'flow_action_payload':  {
+                'screen': safe_screen,
+                **(flow_data or {}),
+            },
+        }
+
+        interactive: dict = {
+            'type':   'flow',
+            'body':   {'text': body_text or 'Tap to open the form.'},
+            'action': {'name': 'flow', 'parameters': parameters},
+        }
+        if header_text.strip():
+            interactive['header'] = {'type': 'text', 'text': header_text}
+        if footer_text.strip():
+            interactive['footer'] = {'text': footer_text}
+
+        payload = {
+            'messaging_product': 'whatsapp',
+            'recipient_type':    'individual',
+            'to':                to,
+            'type':              'interactive',
+            'interactive':       interactive,
+        }
+        log.info(f'[WA SEND] flow={flow_id} to={to} token={flow_token}')
+        return await self._post(f'{self.base}/{self.phone_id}/messages', payload)
 
     async def mark_read(self, message_id: str) -> dict:
         return await self._post(f'{self.base}/{self.phone_id}/messages', {

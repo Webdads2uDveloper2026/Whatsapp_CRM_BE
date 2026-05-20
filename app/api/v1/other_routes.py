@@ -255,3 +255,12 @@ async def import_sheets(body: SheetsImportRequest,
         created += 1
 
     return {"created": created, "skipped": skipped, "errors": errors}
+
+
+# Combined router for auto-discovery by main.py
+router = APIRouter()
+router.include_router(tenants_router)
+router.include_router(admin_router)
+router.include_router(automations_router)
+router.include_router(media_router)
+router.include_router(integrations_router)

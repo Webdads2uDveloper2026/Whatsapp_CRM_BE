@@ -15,7 +15,7 @@ from typing   import Optional
 from fastapi  import APIRouter, HTTPException, Depends, UploadFile, File, Form
 from pydantic import BaseModel, Field
 from app.models.tenant    import Tenant
-from app.core.dependencies import get_current_tenant, get_active_tenant
+from app.core.dependencies import get_current_tenant, get_active_tenant, get_tenant_from_token, get_active_tenant_from_token
 from app.config           import get_settings
 
 router   = APIRouter(prefix='/templates', tags=['templates'])
@@ -79,7 +79,7 @@ class SendTemplateReq(BaseModel):
 @router.post('')
 async def create_template(
     body:   CreateTemplateReq,
-    tenant: Tenant = Depends(get_active_tenant),
+    tenant: Tenant = Depends(get_active_tenant_from_token),
 ):
     """Submit new template to Meta. Uses UPPERCASE component types."""
     import re
@@ -90,6 +90,29 @@ async def create_template(
 
     from app.services.whatsapp import normalize_create_components
     comps = normalize_create_components(body.components)
+
+    # ── Sanitize components before sending to Meta ────────────────────────────
+    cleaned = []
+    for comp in comps:
+        ctype = comp.get('type', '')
+        fmt   = comp.get('format', '')
+
+        # Skip TEXT header if text is empty — Meta rejects it (error 2388084)
+        if ctype == 'HEADER' and fmt == 'TEXT' and not (comp.get('text') or '').strip():
+            print('[TEMPLATE] Skipping empty TEXT header')
+            continue
+
+        # Auto-add https:// to URL buttons missing a protocol
+        if ctype == 'BUTTONS':
+            for btn in comp.get('buttons', []):
+                if btn.get('type') == 'URL':
+                    url = (btn.get('url') or '').strip()
+                    if url and not url.startswith(('http://', 'https://')):
+                        btn['url'] = 'https://' + url
+                        print(f'[TEMPLATE] Auto-fixed URL: {btn["url"]}')
+
+        cleaned.append(comp)
+    comps = cleaned
 
     # ── Auto-upload image/video/document headers to get header_handle ────────
     # Uses Meta Resumable Upload API (/{APP_ID}/uploads) which returns 'h' handle.
@@ -148,9 +171,11 @@ async def create_template(
 
 # ─── SYNC from Meta ───────────────────────────────────────────────────────────
 @router.post('/sync')
-async def sync_templates(tenant: Tenant = Depends(get_active_tenant)):
+async def sync_templates(tenant: Tenant = Depends(get_active_tenant_from_token)):
     """Fetch all templates from Meta and save/update locally."""
     token, waba_id = _creds(tenant)
+
+    log.info(f'[SYNC] tenant={tenant.id} waba_id={waba_id} phone_number_id={getattr(tenant, "phone_number_id", "NOT SET")}')
 
     synced  = 0
     url     = f'https://graph.facebook.com/{settings.meta_api_version}/{waba_id}/message_templates'
@@ -189,7 +214,7 @@ async def sync_templates(tenant: Tenant = Depends(get_active_tenant)):
 # ─── LIST local ───────────────────────────────────────────────────────────────
 @router.get('/local')
 async def list_local(
-    tenant: Tenant = Depends(get_current_tenant),
+    tenant: Tenant = Depends(get_tenant_from_token),
     status: Optional[str] = None,
 ):
     from app.database import db
@@ -202,7 +227,7 @@ async def list_local(
 
 # ─── DELETE ───────────────────────────────────────────────────────────────────
 @router.delete('/{name}')
-async def delete_template(name: str, tenant: Tenant = Depends(get_active_tenant)):
+async def delete_template(name: str, tenant: Tenant = Depends(get_active_tenant_from_token)):
     from app.database import db
     token, waba_id = _creds(tenant)
 
@@ -228,7 +253,7 @@ async def delete_template(name: str, tenant: Tenant = Depends(get_active_tenant)
 async def send_template(
     wa_id:  str,
     body:   SendTemplateReq,
-    tenant: Tenant = Depends(get_active_tenant),
+    tenant: Tenant = Depends(get_active_tenant_from_token),
 ):
     """
     Send an approved template to a WhatsApp number.
@@ -369,7 +394,7 @@ async def send_template(
 async def upload_media_for_template(
     file:   UploadFile = File(...),
     type:   str        = Form('image'),
-    tenant: Tenant     = Depends(get_active_tenant),
+    tenant: Tenant     = Depends(get_active_tenant_from_token),
 ):
     """
     Upload image/video/document to Meta for use in template headers.
@@ -422,18 +447,15 @@ async def upload_media_for_template(
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 def _creds(tenant: Tenant):
-    from app.core.security import decrypt_token
-    token = None
-    if getattr(tenant, 'encrypted_access_token', None):
-        try:
-            token = decrypt_token(tenant.encrypted_access_token)
-        except Exception:
-            pass
-    token   = token or settings.meta_access_token
-    waba_id = getattr(tenant, 'waba_id', None) or settings.meta_waba_id
-    if not token:   raise HTTPException(400, 'No access token configured')
-    if not waba_id: raise HTTPException(400, 'No WABA ID configured')
-    return token, waba_id
+    """
+    Returns (token, waba_id) for all WABA-level Meta API calls in this module.
+
+    Delegates entirely to resolve_waba_creds() in whatsapp.py — the single
+    source of truth for token resolution. This ensures META_SYSTEM_USER_TOKEN
+    is always used first, so no call in this file ever touches an expired token.
+    """
+    from app.services.whatsapp import resolve_waba_creds
+    return resolve_waba_creds(tenant)
 
 
 def _auth(token: str) -> dict:
@@ -521,7 +543,7 @@ async def _upload_media_for_template(token: str, tenant, url: str, fmt: str) -> 
 @router.post('/upload-header')
 async def upload_header_media(
     file:   UploadFile = File(...),
-    tenant: Tenant     = Depends(get_active_tenant),
+    tenant: Tenant     = Depends(get_active_tenant_from_token),
 ):
     """
     Upload an image/video/document to Meta via Resumable Upload API.

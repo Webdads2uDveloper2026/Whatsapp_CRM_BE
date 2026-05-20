@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File
 from pydantic import BaseModel
 from app.models.contact import Contact
 from app.models.tenant import Tenant
-from app.core.dependencies import get_current_tenant
+from app.core.dependencies import get_current_tenant, get_tenant_from_token, get_active_tenant_from_token
 
 router = APIRouter(prefix="/contacts", tags=["contacts"])
 
@@ -41,7 +41,7 @@ class BulkUploadRequest(BaseModel):
 
 @router.get("")
 async def list_contacts(
-    tenant: Tenant = Depends(get_current_tenant),
+    tenant: Tenant = Depends(get_tenant_from_token),
     tag: Optional[str] = Query(None),
     opted_in: Optional[bool] = Query(None),
     search: Optional[str] = Query(None),
@@ -67,7 +67,7 @@ async def list_contacts(
 
 @router.post("", status_code=201)
 async def create_contact(body: CreateContactRequest,
-                         tenant: Tenant = Depends(get_current_tenant)):
+                         tenant: Tenant = Depends(get_tenant_from_token)):
     if await Contact.find_one(Contact.tenant_id == str(tenant.id), Contact.wa_id == body.wa_id):
         raise HTTPException(409, "Contact already exists")
     c = Contact(tenant_id=str(tenant.id), **body.model_dump())
@@ -76,13 +76,13 @@ async def create_contact(body: CreateContactRequest,
 
 
 @router.get("/{cid}")
-async def get_contact(cid: str, tenant: Tenant = Depends(get_current_tenant)):
+async def get_contact(cid: str, tenant: Tenant = Depends(get_tenant_from_token)):
     return _s(await _owned(cid, tenant))
 
 
 @router.patch("/{cid}")
 async def update_contact(cid: str, body: UpdateContactRequest,
-                         tenant: Tenant = Depends(get_current_tenant)):
+                         tenant: Tenant = Depends(get_tenant_from_token)):
     c = await _owned(cid, tenant)
     for f, v in body.model_dump(exclude_none=True).items():
         setattr(c, f, v)
@@ -92,12 +92,12 @@ async def update_contact(cid: str, body: UpdateContactRequest,
 
 
 @router.delete("/{cid}", status_code=204)
-async def delete_contact(cid: str, tenant: Tenant = Depends(get_current_tenant)):
+async def delete_contact(cid: str, tenant: Tenant = Depends(get_tenant_from_token)):
     await (await _owned(cid, tenant)).delete()
 
 
 @router.post("/{cid}/tags/{tag}")
-async def add_tag(cid: str, tag: str, tenant: Tenant = Depends(get_current_tenant)):
+async def add_tag(cid: str, tag: str, tenant: Tenant = Depends(get_tenant_from_token)):
     c = await _owned(cid, tenant)
     if tag not in c.tags:
         c.tags.append(tag)
@@ -106,7 +106,7 @@ async def add_tag(cid: str, tag: str, tenant: Tenant = Depends(get_current_tenan
 
 
 @router.delete("/{cid}/tags/{tag}")
-async def remove_tag(cid: str, tag: str, tenant: Tenant = Depends(get_current_tenant)):
+async def remove_tag(cid: str, tag: str, tenant: Tenant = Depends(get_tenant_from_token)):
     c = await _owned(cid, tenant)
     c.tags = [t for t in c.tags if t != tag]
     await c.save()
@@ -115,7 +115,7 @@ async def remove_tag(cid: str, tag: str, tenant: Tenant = Depends(get_current_te
 
 @router.post("/bulk", status_code=201)
 async def bulk_upload(body: BulkUploadRequest,
-                      tenant: Tenant = Depends(get_current_tenant)):
+                      tenant: Tenant = Depends(get_tenant_from_token)):
     created = skipped = 0
     for item in body.contacts:
         if await Contact.find_one(Contact.tenant_id == str(tenant.id),

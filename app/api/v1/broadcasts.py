@@ -16,7 +16,7 @@ from typing import Optional, List
 from fastapi import APIRouter, HTTPException, Depends, Query, BackgroundTasks
 from pydantic import BaseModel
 from app.models.tenant import Tenant
-from app.core.dependencies import get_current_tenant, get_active_tenant
+from app.core.dependencies import get_current_tenant, get_active_tenant, get_tenant_from_token, get_active_tenant_from_token
 
 router = APIRouter(prefix="/broadcasts", tags=["broadcasts"])
 
@@ -56,7 +56,7 @@ class EditBroadcastRequest(BaseModel):
 async def create_broadcast(
     body: CreateBroadcastRequest,
     bg:   BackgroundTasks,
-    tenant: Tenant = Depends(get_active_tenant),
+    tenant: Tenant = Depends(get_active_tenant_from_token),
 ):
     from app.database import db
     tid = str(tenant.id)
@@ -97,7 +97,7 @@ async def create_broadcast(
 # ── List ──────────────────────────────────────────────────────────────────────
 @router.get("")
 async def list_broadcasts(
-    tenant: Tenant = Depends(get_current_tenant),
+    tenant: Tenant = Depends(get_tenant_from_token),
     page:   int    = Query(1, ge=1),
     limit:  int    = Query(50, ge=1, le=100),
     status: Optional[str] = Query(None),
@@ -121,7 +121,7 @@ async def list_broadcasts(
 
 # ── Get one ───────────────────────────────────────────────────────────────────
 @router.get("/{bid}")
-async def get_broadcast(bid: str, tenant: Tenant = Depends(get_current_tenant)):
+async def get_broadcast(bid: str, tenant: Tenant = Depends(get_tenant_from_token)):
     from app.database import db
     from bson import ObjectId
     doc = await db.broadcasts.find_one({"_id": ObjectId(bid), "tenant_id": str(tenant.id)})
@@ -135,7 +135,7 @@ async def get_broadcast(bid: str, tenant: Tenant = Depends(get_current_tenant)):
 async def edit_broadcast(
     bid:  str,
     body: EditBroadcastRequest,
-    tenant: Tenant = Depends(get_active_tenant),
+    tenant: Tenant = Depends(get_active_tenant_from_token),
 ):
     from app.database import db
     from bson import ObjectId
@@ -160,7 +160,7 @@ async def edit_broadcast(
 
 # ── Delete ────────────────────────────────────────────────────────────────────
 @router.delete("/{bid}")
-async def delete_broadcast(bid: str, tenant: Tenant = Depends(get_current_tenant)):
+async def delete_broadcast(bid: str, tenant: Tenant = Depends(get_tenant_from_token)):
     from app.database import db
     from bson import ObjectId
     r = await db.broadcasts.delete_one({"_id": ObjectId(bid), "tenant_id": str(tenant.id)})
@@ -175,7 +175,7 @@ async def broadcast_contacts(
     bid:    str,
     page:   int = Query(1, ge=1),
     limit:  int = Query(50, ge=1, le=100),
-    tenant: Tenant = Depends(get_current_tenant),
+    tenant: Tenant = Depends(get_tenant_from_token),
 ):
     """
     Return the contact list that was / will be targeted by this broadcast.
@@ -220,7 +220,7 @@ async def broadcast_contacts(
 async def send_broadcast(
     bid: str,
     bg:  BackgroundTasks,
-    tenant: Tenant = Depends(get_active_tenant),
+    tenant: Tenant = Depends(get_active_tenant_from_token),
 ):
     from app.database import db
     from bson import ObjectId
@@ -244,7 +244,7 @@ async def send_broadcast(
 
 # ── Reset (unstick running/failed) ────────────────────────────────────────────
 @router.post("/{bid}/reset")
-async def reset_broadcast(bid: str, tenant: Tenant = Depends(get_active_tenant)):
+async def reset_broadcast(bid: str, tenant: Tenant = Depends(get_active_tenant_from_token)):
     from app.database import db
     from bson import ObjectId
     tid = str(tenant.id)

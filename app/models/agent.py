@@ -1,6 +1,6 @@
 from beanie import Document
 from pydantic import EmailStr
-from typing import Optional, Any
+from typing import Optional, Any, List
 from datetime import datetime
 
 
@@ -13,6 +13,9 @@ class Agent(Document):
     is_active: bool = True
     avatar_initials: str = ""
     last_login_at: Optional[datetime] = None
+    custom_permissions: Optional[List[str]] = None
+    invited_by: Optional[str] = None
+    last_active_at: Optional[datetime] = None
     created_at: datetime = datetime.utcnow()
     updated_at: datetime = datetime.utcnow()
 

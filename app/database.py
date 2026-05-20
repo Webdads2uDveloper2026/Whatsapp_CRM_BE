@@ -17,12 +17,14 @@ async def connect_db() -> None:
 
     from app.models.tenant import Tenant
     from app.models.agent import Agent, Contact, Conversation, Message, Template, Broadcast, Automation
+    from app.models.super_admin import SuperAdmin, SubscriptionPlan
 
     await init_beanie(
         database=db,
         document_models=[
             Tenant, Agent, Contact, Conversation,
             Message, Template, Broadcast, Automation,
+            SuperAdmin, SubscriptionPlan,
         ],
     )
     log.info("mongodb.connected", db=settings.mongodb_db_name)
