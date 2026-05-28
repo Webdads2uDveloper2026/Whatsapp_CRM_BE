@@ -85,10 +85,9 @@ class RegisterBody(BaseModel):
     password:      str
 
 class EmbeddedSignupBody(BaseModel):
-    code:            str            # Short-lived code from FB.login()
-    waba_id:         Optional[str] = ""   # From WA_EMBEDDED_SIGNUP message event
-    phone_number_id: Optional[str] = ""   # From WA_EMBEDDED_SIGNUP message event
-    redirect_uri:    Optional[str] = ""   # Reserved — not used in SDK popup flow
+    code:            str
+    waba_id:         Optional[str] = ""
+    phone_number_id: Optional[str] = ""
 
 class ManualConnectBody(BaseModel):
     waba_id:         str
@@ -147,9 +146,7 @@ async def embedded_signup(
     if not settings.meta_app_secret:
         raise HTTPException(500, "META_APP_SECRET not configured in .env")
 
-    # ── Step 1: Exchange code for access token ────────────────────────────
-    # FB.login() popup flow implicitly uses this URL as redirect_uri — must match in exchange
-    FB_POPUP_REDIRECT = "https://www.facebook.com/connect/login_success.html"
+    # ── Step 1: Exchange code for access token (no redirect_uri for popup flow) ─
     async with httpx.AsyncClient(timeout=30) as client:
         token_res = await client.get(
             f"{GRAPH}/{API_V}/oauth/access_token",
@@ -157,10 +154,8 @@ async def embedded_signup(
                 "client_id":     settings.meta_app_id,
                 "client_secret": settings.meta_app_secret,
                 "code":          body.code,
-                "redirect_uri":  FB_POPUP_REDIRECT,
             }
         )
-
     token_data = token_res.json()
     print(f"[DEBUG] Meta token response: {token_data}")
     if "error" in token_data:
@@ -171,7 +166,7 @@ async def embedded_signup(
     if not access_token:
         raise HTTPException(400, f"No access token in Meta response: {token_data}")
 
-    # ── Step 1b: Exchange short-lived token for long-lived token (60 days) ──
+    # ── Step 1b: Extend to long-lived token (60 days) ────────────────────
     async with httpx.AsyncClient(timeout=30) as client:
         ll_res = await client.get(
             f"{GRAPH}/{API_V}/oauth/access_token",
@@ -185,7 +180,7 @@ async def embedded_signup(
     ll_data = ll_res.json()
     print(f"[DEBUG] Long-lived token response: {ll_data}")
     if "access_token" in ll_data:
-        access_token = ll_data["access_token"]  # use long-lived token
+        access_token = ll_data["access_token"]
         print(f"[DEBUG] Using long-lived token (expires_in={ll_data.get('expires_in')}s)")
 
     # ── Step 2: Get WABA details ──────────────────────────────────────────
