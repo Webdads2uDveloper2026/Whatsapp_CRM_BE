@@ -86,6 +86,7 @@
 app/main.py — Clean version, no __init__.py dependency
 """
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -94,6 +95,8 @@ from app.config import get_settings
 from app.database import connect_db, close_db
 
 settings = get_settings()
+
+_started_at = datetime.now(timezone.utc)
 
 
 @asynccontextmanager
@@ -167,7 +170,10 @@ except Exception as e:
 
 @app.get("/.well-known/health", tags=["health"])
 async def health():
-    return {"status": "ok"}
+    return {
+        "status":     "ok",
+        "started_at": _started_at.isoformat(),
+    }
 
 
 @app.exception_handler(404)
