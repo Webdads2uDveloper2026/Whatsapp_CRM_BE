@@ -148,16 +148,18 @@ async def embedded_signup(
         raise HTTPException(500, "META_APP_SECRET not configured in .env")
 
     # ── Step 1: Exchange code for access token ────────────────────────────
-    redirect_uri = body.redirect_uri or settings.meta_redirect_uri or ""
+    redirect_uri = (body.redirect_uri or "").strip()
+    token_params = {
+        "client_id":     settings.meta_app_id,
+        "client_secret": settings.meta_app_secret,
+        "code":          body.code,
+    }
+    if redirect_uri:
+        token_params["redirect_uri"] = redirect_uri
     async with httpx.AsyncClient(timeout=30) as client:
         token_res = await client.get(
             f"{GRAPH}/{API_V}/oauth/access_token",
-            params={
-                "client_id":     settings.meta_app_id,
-                "client_secret": settings.meta_app_secret,
-                "code":          body.code,
-                "redirect_uri":  redirect_uri,
-            }
+            params=token_params,
         )
 
     token_data = token_res.json()
