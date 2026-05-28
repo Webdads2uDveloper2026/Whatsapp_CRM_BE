@@ -88,7 +88,6 @@ class EmbeddedSignupBody(BaseModel):
     code:            str
     waba_id:         Optional[str] = ""
     phone_number_id: Optional[str] = ""
-    redirect_uri:    Optional[str] = ""
 
 class ManualConnectBody(BaseModel):
     waba_id:         str
@@ -147,19 +146,16 @@ async def embedded_signup(
     if not settings.meta_app_secret:
         raise HTTPException(500, "META_APP_SECRET not configured in .env")
 
-    # ── Step 1: Exchange code for access token ───────────────────────────
-    token_params: dict = {
-        "client_id":     settings.meta_app_id,
-        "client_secret": settings.meta_app_secret,
-        "code":          body.code,
-    }
-    if body.redirect_uri:
-        token_params["redirect_uri"] = body.redirect_uri
-        print(f"[DEBUG] Using redirect_uri: {body.redirect_uri}")
+    # ── Step 1: Exchange code for access token (popup flow — no redirect_uri) ──
+    print(f"[DEBUG] Token exchange — app_id={settings.meta_app_id} code_len={len(body.code)} code_prefix={body.code[:20]}")
     async with httpx.AsyncClient(timeout=30) as client:
         token_res = await client.get(
             f"{GRAPH}/{API_V}/oauth/access_token",
-            params=token_params,
+            params={
+                "client_id":     settings.meta_app_id,
+                "client_secret": settings.meta_app_secret,
+                "code":          body.code,
+            }
         )
     token_data = token_res.json()
     print(f"[DEBUG] Meta token response: {token_data}")
