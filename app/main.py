@@ -111,7 +111,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="WhatsApp CRM API",
     version="1.0.0",
-    docs_url="/docs" if settings.app_env != "production" else None,
+    docs_url="/docs",
     redoc_url=None,
     lifespan=lifespan,
 )
