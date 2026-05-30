@@ -541,12 +541,37 @@ def _extract_content(msg: dict, msg_type: str) -> tuple[dict, str]:
         return {"body": btn.get("text"), "payload": btn.get("payload")}, f"🔘 {btn.get('text', '')}"
 
     if msg_type == "interactive":
-        r      = msg.get("interactive", {})
+        r     = msg.get("interactive", {})
+        itype = r.get("type", "")
+
+        # WhatsApp Flow response (nfm_reply)
+        if itype == "nfm_reply":
+            nfm  = r.get("nfm_reply", {})
+            name = nfm.get("name", "")
+            body = nfm.get("body", "")
+            resp_json = nfm.get("response_json", "{}")
+            try:
+                flow_data = json.loads(resp_json) if isinstance(resp_json, str) else resp_json
+            except Exception:
+                flow_data = {}
+            return (
+                {
+                    "body":      body or "Flow response received",
+                    "type":      "flow_response",
+                    "flow_name": name,
+                    "flow_data": flow_data,
+                    "nfm_reply": nfm,
+                },
+                f"📋 {name or 'Flow'} response",
+            )
+
         btn_r  = r.get("button_reply", {})
         list_r = r.get("list_reply", {})
         title  = btn_r.get("title") or list_r.get("title") or ""
-        return ({"body": title, "type": r.get("type"), "button_reply": btn_r, "list_reply": list_r},
-                f"🔘 {title}")
+        return (
+            {"body": title, "type": itype, "button_reply": btn_r, "list_reply": list_r},
+            f"🔘 {title}",
+        )
 
     if msg_type == "order":
         return {"order": msg.get("order", {})}, "🛒 Order received"

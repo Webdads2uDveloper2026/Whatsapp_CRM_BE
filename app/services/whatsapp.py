@@ -485,10 +485,11 @@ class WhatsAppClient:
             )
 
         # Meta enforces 20-char max on flow_cta
-        safe_cta    = (cta_text or 'Open').strip()[:20] or 'Open'
-        # Callers pass positional IDs (SCREEN_A, SCREEN_B...) — keep letters+underscore only
+        safe_cta = (cta_text or 'Open').strip()[:20] or 'Open'
+        # Keep only letters+underscore (Meta requirement). Default to SCREEN_A
+        # if empty — navigate action ALWAYS requires flow_action_payload.screen
         import re as _re
-        safe_screen = _re.sub(r'[^A-Z_]', '', (first_screen or '').upper()) or None
+        safe_screen = _re.sub(r'[^A-Z_]', '', (first_screen or '').upper()) or 'SCREEN_A'
 
         parameters: dict = {
             'flow_message_version': '3',
@@ -496,12 +497,11 @@ class WhatsAppClient:
             'flow_id':              str(flow_id).strip(),
             'flow_cta':             safe_cta,
             'flow_action':          'navigate',
-        }
-        if safe_screen:
-            parameters['flow_action_payload'] = {
+            'flow_action_payload':  {
                 'screen': safe_screen,
                 **(flow_data or {}),
-            }
+            },
+        }
 
         interactive: dict = {
             'type':   'flow',
