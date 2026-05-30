@@ -173,6 +173,8 @@ async def health():
     return {
         "status":     "ok",
         "started_at": _started_at.isoformat(),
+        "date": "30-05-2026",
+        "message": "Service is running"
     }
 
 
