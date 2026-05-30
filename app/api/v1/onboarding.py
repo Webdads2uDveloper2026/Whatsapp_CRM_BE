@@ -85,14 +85,16 @@ class RegisterBody(BaseModel):
     password:      str
 
 class EmbeddedSignupBody(BaseModel):
-    code:            str
+    code:            Optional[str] = ""   # code flow (response_type='code')
+    access_token:    Optional[str] = ""   # token flow (response_type='token')
     waba_id:         Optional[str] = ""
     phone_number_id: Optional[str] = ""
+    redirect_uri:    Optional[str] = ""
 
 class ManualConnectBody(BaseModel):
     waba_id:         str
     phone_number_id: str
-    access_token:    str
+    access_token:    Optional[str] = ""   # Optional — falls back to system user token
 
 class RefreshTokenBody(BaseModel):
     refresh_token: str
@@ -141,48 +143,56 @@ async def embedded_signup(
         &client_secret=APP_SECRET
         &code=CODE
     """
-    if not body.code:
-        raise HTTPException(400, "code is required")
-    if not settings.meta_app_secret:
-        raise HTTPException(500, "META_APP_SECRET not configured in .env")
+    if not body.code and not body.access_token:
+        raise HTTPException(400, "Either 'code' or 'access_token' is required")
 
-    # ── Step 1: Exchange code for access token (popup flow — no redirect_uri) ──
-    print(f"[DEBUG] Token exchange — app_id={settings.meta_app_id} code_len={len(body.code)} code_prefix={body.code[:20]}")
-    async with httpx.AsyncClient(timeout=30) as client:
-        token_res = await client.get(
-            f"{GRAPH}/{API_V}/oauth/access_token",
-            params={
-                "client_id":     settings.meta_app_id,
-                "client_secret": settings.meta_app_secret,
-                "code":          body.code,
-            }
-        )
-    token_data = token_res.json()
-    print(f"[DEBUG] Meta token response: {token_data}")
-    if "error" in token_data:
-        err = token_data["error"]
-        raise HTTPException(400, f"Meta token exchange failed (code {err.get('code')}): {err.get('message', str(err))}")
+    access_token = body.access_token or ""
 
-    access_token = token_data.get("access_token")
-    if not access_token:
-        raise HTTPException(400, f"No access token in Meta response: {token_data}")
+    if body.code and not access_token:
+        # ── Code flow: exchange code for access token ─────────────────────
+        if not settings.meta_app_secret:
+            raise HTTPException(500, "META_APP_SECRET not configured in .env")
+        print(f"[DEBUG] Code flow — app_id={settings.meta_app_id} code_prefix={body.code[:20]}")
+        token_params: dict = {
+            "client_id":     settings.meta_app_id,
+            "client_secret": settings.meta_app_secret,
+            "code":          body.code,
+        }
+        if body.redirect_uri:
+            token_params["redirect_uri"] = body.redirect_uri
+        async with httpx.AsyncClient(timeout=30) as client:
+            token_res = await client.get(
+                f"{GRAPH}/{API_V}/oauth/access_token",
+                params=token_params,
+            )
+        token_data = token_res.json()
+        print(f"[DEBUG] Meta token response: {token_data}")
+        if "error" in token_data:
+            err = token_data["error"]
+            raise HTTPException(400, f"Meta token exchange failed (code {err.get('code')}): {err.get('message', str(err))}")
+        access_token = token_data.get("access_token")
+        if not access_token:
+            raise HTTPException(400, f"No access token in Meta response: {token_data}")
+    else:
+        print(f"[DEBUG] Token flow — access_token received directly from FB.login()")
 
-    # ── Step 1b: Extend to long-lived token (60 days) ────────────────────
-    async with httpx.AsyncClient(timeout=30) as client:
-        ll_res = await client.get(
-            f"{GRAPH}/{API_V}/oauth/access_token",
-            params={
-                "grant_type":        "fb_exchange_token",
-                "client_id":         settings.meta_app_id,
-                "client_secret":     settings.meta_app_secret,
-                "fb_exchange_token": access_token,
-            }
-        )
-    ll_data = ll_res.json()
-    print(f"[DEBUG] Long-lived token response: {ll_data}")
-    if "access_token" in ll_data:
-        access_token = ll_data["access_token"]
-        print(f"[DEBUG] Using long-lived token (expires_in={ll_data.get('expires_in')}s)")
+    # ── Extend to long-lived token (works for both flows) ─────────────────
+    if access_token and settings.meta_app_secret:
+        async with httpx.AsyncClient(timeout=30) as client:
+            ll_res = await client.get(
+                f"{GRAPH}/{API_V}/oauth/access_token",
+                params={
+                    "grant_type":        "fb_exchange_token",
+                    "client_id":         settings.meta_app_id,
+                    "client_secret":     settings.meta_app_secret,
+                    "fb_exchange_token": access_token,
+                }
+            )
+        ll_data = ll_res.json()
+        print(f"[DEBUG] Long-lived token response: {ll_data}")
+        if "access_token" in ll_data:
+            access_token = ll_data["access_token"]
+            print(f"[DEBUG] Using long-lived token (expires_in={ll_data.get('expires_in')}s)")
 
     # ── Step 2: Get WABA details ──────────────────────────────────────────
     # Use waba_id from the ES message event only — never fall back to .env
@@ -338,47 +348,99 @@ async def connect_manual(
     body:   ManualConnectBody,
     tenant: Tenant = Depends(get_current_tenant),
 ):
-    """Connect using manually entered credentials (WABA ID + Phone ID + token)."""
-    # Validate token by fetching WABA info
+    """
+    Connect using WABA ID + Phone Number ID.
+    Uses the tech provider's system user token — customer access token is optional.
+    For this to work without a customer token, the WABA must already be shared
+    with the tech provider's Business Manager (via Embedded Signup or Meta BM).
+    """
+    # Resolve which token to use for validation
+    # Priority: system user token → customer-provided token
+    partner_token = settings.meta_system_user_token or body.access_token
+    if not partner_token:
+        raise HTTPException(400, "No token available. Set META_SYSTEM_USER_TOKEN in .env or provide an access_token.")
+
+    # ── Validate WABA via partner token ───────────────────────────────────
     async with httpx.AsyncClient(timeout=30) as client:
         res = await client.get(
             f"{GRAPH}/{API_V}/{body.waba_id}",
             params={
                 "fields":       "id,name,currency,message_template_namespace",
-                "access_token": body.access_token,
+                "access_token": partner_token,
             }
         )
     data = res.json()
     if "error" in data:
-        err = data["error"]
-        raise HTTPException(400, f"Meta error ({err.get('code','?')}): {err.get('message', str(err))}")
+        # Partner token failed — try customer token if provided
+        if body.access_token and body.access_token != partner_token:
+            async with httpx.AsyncClient(timeout=30) as client:
+                res = await client.get(
+                    f"{GRAPH}/{API_V}/{body.waba_id}",
+                    params={
+                        "fields":       "id,name,currency,message_template_namespace",
+                        "access_token": body.access_token,
+                    }
+                )
+            data = res.json()
+        if "error" in data:
+            err = data["error"]
+            raise HTTPException(400, f"Meta error ({err.get('code','?')}): {err.get('message', str(err))}")
+        # Customer token worked — assign system user so we can use partner token going forward
+        if settings.meta_system_user_id and settings.meta_system_user_token:
+            try:
+                async with httpx.AsyncClient(timeout=15) as client:
+                    assign_res = await client.post(
+                        f"{GRAPH}/{API_V}/{body.waba_id}/assigned_users",
+                        params=[
+                            ("user",         settings.meta_system_user_id),
+                            ("tasks",        "MANAGE"),
+                            ("tasks",        "DEVELOP"),
+                            ("tasks",        "MESSAGING"),
+                            ("access_token", body.access_token),
+                        ]
+                    )
+                if assign_res.json().get("success"):
+                    partner_token = settings.meta_system_user_token
+                    print(f"[INFO] System user assigned — switching to partner token")
+                else:
+                    partner_token = body.access_token
+                    print(f"[WARN] System user assignment failed: {assign_res.json()}")
+            except Exception as e:
+                partner_token = body.access_token
+                print(f"[WARN] System user assignment error: {e}")
+        else:
+            partner_token = body.access_token
 
-    # Get phone number
+    print(f"[INFO] Manual connect — using {'system user' if partner_token == settings.meta_system_user_token else 'customer'} token")
+
+    # ── Get phone number details ──────────────────────────────────────────
     phone_number = ""
     async with httpx.AsyncClient(timeout=30) as client:
         ph_res = await client.get(
             f"{GRAPH}/{API_V}/{body.phone_number_id}",
             params={
                 "fields":       "display_phone_number,verified_name,status",
-                "access_token": body.access_token,
+                "access_token": partner_token,
             }
         )
     ph = ph_res.json()
     if "error" not in ph:
         phone_number = ph.get("display_phone_number", "")
 
-    # Subscribe webhooks
+    # ── Subscribe WABA to app webhooks ────────────────────────────────────
     async with httpx.AsyncClient(timeout=30) as client:
-        await client.post(
+        sub_res = await client.post(
             f"{GRAPH}/{API_V}/{body.waba_id}/subscribed_apps",
-            params={"access_token": body.access_token}
+            params={"access_token": partner_token}
         )
+    if not sub_res.json().get("success"):
+        print(f"[WARN] WABA webhook subscription: {sub_res.json()}")
 
     tenant.waba_id                = body.waba_id
     tenant.phone_number_id        = body.phone_number_id
     tenant.display_phone_number   = phone_number
     tenant.waba_name              = data.get("name", "")
-    tenant.encrypted_access_token = encrypt_token(body.access_token)
+    tenant.encrypted_access_token = encrypt_token(partner_token)
     tenant.webhook_verify_token   = settings.webhook_verify_token
     tenant.status                 = "active"
     tenant.waba_connected         = True

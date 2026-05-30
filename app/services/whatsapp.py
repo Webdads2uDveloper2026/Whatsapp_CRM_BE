@@ -477,19 +477,31 @@ class WhatsAppClient:
         Docs: https://developers.facebook.com/docs/whatsapp/flows/sending-flows
         """
         import re
-        safe_screen = re.sub(r'[^A-Z0-9_]', '_', (first_screen or 'WELCOME').upper())
+        # Meta requires flow_id to be numeric — catch wrong IDs early
+        if not str(flow_id).strip().isdigit():
+            raise ValueError(
+                f"flow_id '{flow_id}' is not a valid Meta numeric flow ID. "
+                "Make sure the flow is published on Meta and has a numeric meta_flow_id."
+            )
+
+        # Meta enforces 20-char max on flow_cta
+        safe_cta    = (cta_text or 'Open').strip()[:20] or 'Open'
+        # Callers pass positional IDs (SCREEN_A, SCREEN_B...) — keep letters+underscore only
+        import re as _re
+        safe_screen = _re.sub(r'[^A-Z_]', '', (first_screen or '').upper()) or None
 
         parameters: dict = {
             'flow_message_version': '3',
             'flow_token':           flow_token,
-            'flow_id':              flow_id,
-            'flow_cta':             cta_text,
+            'flow_id':              str(flow_id).strip(),
+            'flow_cta':             safe_cta,
             'flow_action':          'navigate',
-            'flow_action_payload':  {
+        }
+        if safe_screen:
+            parameters['flow_action_payload'] = {
                 'screen': safe_screen,
                 **(flow_data or {}),
-            },
-        }
+            }
 
         interactive: dict = {
             'type':   'flow',
@@ -508,7 +520,8 @@ class WhatsAppClient:
             'type':              'interactive',
             'interactive':       interactive,
         }
-        log.info(f'[WA SEND] flow={flow_id} to={to} token={flow_token}')
+        log.info(f'[WA SEND] flow={flow_id} screen={safe_screen} cta="{safe_cta}" to={to}')
+        log.debug(f'[WA SEND] full payload: {payload}')
         return await self._post(f'{self.base}/{self.phone_id}/messages', payload)
 
     async def mark_read(self, message_id: str) -> dict:

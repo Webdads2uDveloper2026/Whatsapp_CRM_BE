@@ -42,8 +42,41 @@ def _api_version() -> str:
 
 
 def _safe_id(sid: str) -> str:
-    """Convert any screen ID to a Meta-safe UPPERCASE identifier."""
-    return re.sub(r"[^A-Z0-9_]", "_", sid.upper())
+    """
+    Convert any string to a Meta-safe UPPERCASE identifier.
+    Meta requires: ONLY A-Z and underscores — NO numbers, NO hyphens.
+    Digits are replaced with their word equivalents.
+    """
+    NUMBER_WORDS = {
+        '0': 'ZERO', '1': 'ONE', '2': 'TWO', '3': 'THREE', '4': 'FOUR',
+        '5': 'FIVE', '6': 'SIX', '7': 'SEVEN', '8': 'EIGHT', '9': 'NINE',
+    }
+    upper = sid.upper()
+    for digit, word in NUMBER_WORDS.items():
+        upper = upper.replace(digit, f'_{word}_')
+    safe = re.sub(r'[^A-Z_]', '_', upper)
+    safe = re.sub(r'_+', '_', safe).strip('_')
+    return safe or 'SCREEN'
+
+
+def _alpha_id(n: int) -> str:
+    """Convert 0-based index to a letter-only screen ID: A→SCREEN_A, 26→SCREEN_AA, ..."""
+    letters = ""
+    n += 1
+    while n > 0:
+        n, rem = divmod(n - 1, 26)
+        letters = chr(65 + rem) + letters
+    return f"SCREEN_{letters}"
+
+
+def _opt_id(n: int) -> str:
+    """Convert 0-based index to a letter-only dropdown option ID: OPT_A, OPT_B, ..."""
+    letters = ""
+    n += 1
+    while n > 0:
+        n, rem = divmod(n - 1, 26)
+        letters = chr(65 + rem) + letters
+    return f"OPT_{letters}"
 
 
 def screens_to_flow_json(screens: list) -> dict:
@@ -52,17 +85,24 @@ def screens_to_flow_json(screens: list) -> dict:
     Docs: https://developers.facebook.com/docs/whatsapp/flows/reference/flowjson
 
     Rules enforced:
-    - Every screen must have exactly one Footer action (Meta requirement)
-    - Screen IDs must be UPPER_SNAKE_CASE
+    - id fields must contain ONLY letters and underscores (no digits) — Meta requirement
+    - Screen IDs are positional: SCREEN_A, SCREEN_B, SCREEN_C, ...
+    - Dropdown option IDs are positional: OPT_A, OPT_B, ...
+    - Every screen must have exactly one Footer action
     - At least one screen must be terminal=true
-    - routing_model removed (deprecated since v4.0; navigation inferred from on-click-action)
+    - Terminal screen Footer must use complete action
     """
 
+    # Map original stored ID → letter-only Meta ID
+    id_map = {_safe_id(s["id"]): _alpha_id(i) for i, s in enumerate(screens)}
+
     def build_action(btn: dict) -> dict:
-        if btn.get("action") == "NAVIGATE" and btn.get("next_screen"):
+        orig = _safe_id(btn.get("next_screen", "")) if btn.get("next_screen") else ""
+        target = id_map.get(orig, "")
+        if btn.get("action") == "NAVIGATE" and target:
             return {
                 "name":    "navigate",
-                "next":    {"type": "screen", "name": _safe_id(btn["next_screen"])},
+                "next":    {"type": "screen", "name": target},
                 "payload": {},
             }
         return {"name": "complete", "payload": {}}
@@ -71,9 +111,9 @@ def screens_to_flow_json(screens: list) -> dict:
     meta_screens = []
 
     for screen in screens:
-        safe_sid = _safe_id(screen["id"])
+        safe_sid = id_map[_safe_id(screen["id"])]   # letter-only: SCREEN_A, SCREEN_B, ...
         children = []
-        nav_btns = []      # collect ALL action buttons; render as single batch of Footers
+        nav_btns = []      # collect action buttons; only ONE Footer allowed per screen
 
         for comp in screen.get("components", []):
             ctype = comp.get("type", "")
@@ -88,7 +128,7 @@ def screens_to_flow_json(screens: list) -> dict:
                 }
                 item = {
                     "type":       "TextInput",
-                    "name":       re.sub(r"[^a-zA-Z0-9_]", "_", comp["id"]),
+                    "name":       _safe_id(comp["id"]).lower(),
                     "label":      comp.get("label", "Input"),
                     "input-type": itype_map.get(comp.get("input_type", "text"), "text"),
                     "required":   comp.get("required", False),
@@ -98,16 +138,18 @@ def screens_to_flow_json(screens: list) -> dict:
                 children.append(item)
 
             elif ctype == "dropdown":
-                children.append({
-                    "type":        "Dropdown",
-                    "name":        re.sub(r"[^a-zA-Z0-9_]", "_", comp["id"]),
-                    "label":       comp.get("label", "Choose an option"),
-                    "required":    comp.get("required", False),
-                    "data-source": [
-                        {"id": re.sub(r"[^a-zA-Z0-9_]", "_", opt["id"]), "title": opt["title"]}
-                        for opt in comp.get("options", [])
-                    ],
-                })
+                options = comp.get("options", [])
+                if options:   # Meta rejects empty data-source
+                    children.append({
+                        "type":        "Dropdown",
+                        "name":        _safe_id(comp["id"]).lower(),
+                        "label":       comp.get("label", "Choose an option"),
+                        "required":    comp.get("required", False),
+                        "data-source": [
+                            {"id": _safe_id(opt.get("id", f"opt_{i}")).lower(), "title": opt["title"]}
+                            for i, opt in enumerate(options)
+                        ],
+                    })
 
             elif ctype == "media":
                 if comp.get("media_type") == "image" and comp.get("url"):
@@ -130,20 +172,25 @@ def screens_to_flow_json(screens: list) -> dict:
                     children.append({"type": "TextCaption", "text": comp["footer_text"]})
                 nav_btns.extend(comp.get("buttons", []))
 
-        # ── Render action buttons as Footer elements (Meta requires them last) ──
+        # ── Meta allows exactly ONE Footer per screen — use the primary (last) button ──
         if not nav_btns:
-            # Guard: every screen must have at least one Footer
             nav_btns = [{"label": "Done", "action": "COMPLETE", "next_screen": ""}]
 
-        for btn in nav_btns:
-            action = build_action(btn)
-            children.append({
-                "type":            "Footer",
-                "label":           btn.get("label", "Continue"),
-                "on-click-action": action,
-            })
-
         is_terminal = screen.get("is_terminal", False)
+        primary_btn = nav_btns[-1]   # last button is the primary CTA
+
+        # Terminal screens MUST use complete action — navigate on terminal causes publish failure
+        if is_terminal:
+            footer_action = {"name": "complete", "payload": {}}
+        else:
+            footer_action = build_action(primary_btn)
+
+        children.append({
+            "type":            "Footer",
+            "label":           primary_btn.get("label", "Done" if is_terminal else "Continue"),
+            "on-click-action": footer_action,
+        })
+
         meta_screens.append({
             "id":       safe_sid,
             "title":    screen.get("title", "Screen"),
@@ -153,12 +200,64 @@ def screens_to_flow_json(screens: list) -> dict:
 
     # ── Ensure at least the last screen is terminal ────────────────────────
     if meta_screens and not any(s["terminal"] for s in meta_screens):
-        meta_screens[-1]["terminal"] = True
+        last = meta_screens[-1]
+        last["terminal"] = True
+        # Fix its Footer action to complete — terminal screens can't navigate
+        children = last["layout"]["children"]
+        for comp in children:
+            if comp.get("type") == "Footer":
+                comp["on-click-action"] = {"name": "complete", "payload": {}}
+                break
 
     return {
         "version": "6.1",
         "screens": meta_screens,
     }
+
+
+def _validate_flow_json(flow_json: dict) -> list:
+    """Pre-flight check before uploading to Meta. Returns list of error strings."""
+    errors  = []
+    id_pat  = re.compile(r'^[A-Za-z_]+$')
+    screens = flow_json.get("screens", [])
+
+    if not screens:
+        return ["Flow must have at least one screen"]
+
+    if not any(s.get("terminal") for s in screens):
+        errors.append("At least one screen must be terminal")
+
+    # Pass 1 — collect all valid screen IDs first
+    screen_ids = {s.get("id", "") for s in screens}
+
+    # Pass 2 — validate each screen's components against the full ID set
+    for s in screens:
+        sid = s.get("id", "")
+        if not id_pat.match(sid):
+            errors.append(f"Screen id '{sid}' has invalid chars (only A-Z and _ allowed)")
+
+        has_footer = False
+        for child in s.get("layout", {}).get("children", []):
+            ctype = child.get("type", "")
+            if ctype == "Footer":
+                has_footer = True
+                action = child.get("on-click-action", {})
+                if action.get("name") == "navigate":
+                    target = action.get("next", {}).get("name", "")
+                    if target and target not in screen_ids:
+                        errors.append(f"Navigate target '{target}' not found in screens")
+            name = child.get("name", "")
+            if name and not id_pat.match(name):
+                errors.append(f"Component name '{name}' has invalid chars")
+            for opt in child.get("data-source", []):
+                oid = opt.get("id", "")
+                if oid and not id_pat.match(oid):
+                    errors.append(f"Dropdown option id '{oid}' has invalid chars")
+
+        if not has_footer:
+            errors.append(f"Screen '{sid}' has no Footer action")
+
+    return errors
 
 
 def _fmt_flow(d: dict) -> dict:
@@ -333,26 +432,87 @@ async def publish_flow(fid: str, tenant: Tenant = Depends(get_active_tenant_from
 
     meta_flow_id = doc.get("meta_flow_id")
 
+    # ── Check actual Meta status (sync only — never clear meta_flow_id here) ──
+    if meta_flow_id:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                chk = await client.get(
+                    f"https://graph.facebook.com/{api_ver}/{meta_flow_id}",
+                    params={"fields": "id,status", "access_token": token},
+                )
+                chk_data = chk.json()
+                meta_status = chk_data.get("status", "")
+                log.info(f"[FLOWS] Meta status check: {chk_data}")
+                if meta_status == "PUBLISHED":
+                    await db.flows.update_one({"_id": ObjectId(fid)}, {"$set": {"status": "PUBLISHED"}})
+                    return {"success": True, "meta_flow_id": meta_flow_id, "status": "PUBLISHED",
+                            "note": "Flow was already published on Meta — local status updated"}
+                if meta_status == "DEPRECATED":
+                    raise HTTPException(400,
+                        f"This flow (Meta ID: {meta_flow_id}) has been DEPRECATED on Meta and cannot be published. "
+                        "Delete this flow and create a new one.")
+                if meta_status == "BLOCKED":
+                    raise HTTPException(400,
+                        f"This flow (Meta ID: {meta_flow_id}) is BLOCKED on Meta. "
+                        "Check your Meta Business Manager for details.")
+        except HTTPException:
+            raise
+        except Exception as e:
+            log.warning(f"[FLOWS] Meta status check failed (continuing): {e}")
+
     # ── Step 1: Register on Meta if not done yet ──────────────────────────────
     if not meta_flow_id:
         if not waba_id:
             raise HTTPException(503, "WABA ID not configured. Connect WhatsApp in Settings first.")
         try:
+            VALID_CATEGORIES = {
+                "SIGN_UP", "SIGN_IN", "APPOINTMENT_BOOKING", "LEAD_GENERATION",
+                "CONTACT_US", "CUSTOMER_SUPPORT", "SURVEY", "OTHER",
+            }
             cat = doc.get("category", "LEAD_GENERATION")
-            if cat == "OTHER": cat = "LEAD_GENERATION"
-            async with httpx.AsyncClient(timeout=20) as client:
-                r = await client.post(
+            if cat not in VALID_CATEGORIES:
+                cat = "LEAD_GENERATION"
+
+            # ── Try to find an existing Meta flow with the same name first ────
+            # (avoids error 100/4016019 "duplicate name" when re-registering)
+            async with httpx.AsyncClient(timeout=20) as hc:
+                list_r = await hc.get(
                     f"https://graph.facebook.com/{api_ver}/{waba_id}/flows",
-                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                    json={"name": doc["name"], "categories": [cat]},
+                    params={"fields": "id,name,status", "access_token": token},
                 )
-                resp = r.json()
-            if "id" not in resp:
-                err_msg = resp.get("error", {}).get("message", str(resp))
-                raise HTTPException(502, f"Meta flow registration failed: {err_msg}")
-            meta_flow_id = resp["id"]
-            await db.flows.update_one({"_id": ObjectId(fid)}, {"$set": {"meta_flow_id": meta_flow_id}})
-            log.info(f"[FLOWS] Registered on Meta: {meta_flow_id}")
+                existing_flows = list_r.json().get("data", [])
+                log.info(f"[FLOWS] Existing Meta flows: {[f.get('name') for f in existing_flows]}")
+
+            matched = next(
+                (f for f in existing_flows if f.get("name", "").strip().lower() == doc["name"].strip().lower()),
+                None,
+            )
+            if matched:
+                meta_flow_id = matched["id"]
+                log.info(f"[FLOWS] Reusing existing Meta flow '{matched['name']}' → id={meta_flow_id} status={matched.get('status')}")
+                await db.flows.update_one({"_id": ObjectId(fid)}, {"$set": {"meta_flow_id": meta_flow_id}})
+            else:
+                # No existing flow — register fresh
+                reg_payload = {"name": doc["name"], "categories": [cat]}
+                log.info(f"[FLOWS] Registering new flow — waba_id={waba_id} payload={reg_payload}")
+                async with httpx.AsyncClient(timeout=20) as hc:
+                    r    = await hc.post(
+                        f"https://graph.facebook.com/{api_ver}/{waba_id}/flows",
+                        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                        json=reg_payload,
+                    )
+                    resp = r.json()
+                    log.info(f"[FLOWS] Registration response (HTTP {r.status_code}): {resp}")
+                if "id" not in resp:
+                    err      = resp.get("error", {})
+                    err_msg  = err.get("message", str(resp))
+                    err_code = err.get("code", "")
+                    err_sub  = err.get("error_subcode", "")
+                    log.error(f"[FLOWS] Registration failed — code={err_code} sub={err_sub}: {err_msg}")
+                    raise HTTPException(502, f"Meta flow registration failed (code {err_code}): {err_msg}")
+                meta_flow_id = resp["id"]
+                await db.flows.update_one({"_id": ObjectId(fid)}, {"$set": {"meta_flow_id": meta_flow_id}})
+                log.info(f"[FLOWS] Registered new Meta flow: {meta_flow_id}")
         except HTTPException:
             raise
         except Exception as e:
@@ -364,7 +524,12 @@ async def publish_flow(fid: str, tenant: Tenant = Depends(get_active_tenant_from
         raise HTTPException(422, "Flow has no screens. Add at least one screen before publishing.")
 
     try:
-        flow_json_str = json.dumps(screens_to_flow_json(screens))
+        flow_json_obj = screens_to_flow_json(screens)
+        pre_errors    = _validate_flow_json(flow_json_obj)
+        if pre_errors:
+            raise HTTPException(422, f"Flow JSON pre-flight failed: {'; '.join(pre_errors)}")
+        flow_json_str = json.dumps(flow_json_obj)
+        log.info(f"[FLOWS] Uploading JSON: {flow_json_str}")
         async with httpx.AsyncClient(timeout=30) as client:
             upload_r = await client.post(
                 f"https://graph.facebook.com/{api_ver}/{meta_flow_id}/assets",
@@ -375,10 +540,16 @@ async def publish_flow(fid: str, tenant: Tenant = Depends(get_active_tenant_from
             upload_data = upload_r.json()
             log.info(f"[FLOWS] JSON upload response: {upload_data}")
 
+            # Capture validation warnings even when success=True (they block publish)
+            v_errs = upload_data.get("validation_errors", [])
+            if v_errs:
+                msgs = "; ".join(
+                    e.get("message", str(e)) for e in v_errs if isinstance(e, dict)
+                ) or str(v_errs)
+                log.warning(f"[FLOWS] Validation warnings: {msgs}")
+                raise HTTPException(422, f"Meta flow JSON has errors: {msgs}")
+
             if upload_data.get("success") is False or "error" in upload_data:
-                v_errs = upload_data.get("validation_errors", [])
-                if v_errs:
-                    raise HTTPException(422, f"Flow JSON validation errors: {v_errs}")
                 err_msg = upload_data.get("error", {}).get("message", str(upload_data))
                 raise HTTPException(422, f"Flow JSON upload failed: {err_msg}")
 
@@ -396,11 +567,16 @@ async def publish_flow(fid: str, tenant: Tenant = Depends(get_active_tenant_from
                 json={},
             )
             pub_data = pub_r.json()
-            log.info(f"[FLOWS] Publish response: {pub_data}")
+            log.info(f"[FLOWS] Publish response (status={pub_r.status_code}): {pub_data}")
 
         if "error" in pub_data:
-            err_msg = pub_data["error"].get("message", str(pub_data["error"]))
-            raise HTTPException(422, f"Meta publish failed: {err_msg}")
+            err     = pub_data["error"]
+            code    = err.get("code", "")
+            subcode = err.get("error_subcode", "")
+            msg     = err.get("message", str(err))
+            fbtrace = err.get("fbtrace_id", "")
+            log.error(f"[FLOWS] Publish error code={code} subcode={subcode} fbtrace={fbtrace}: {msg}")
+            raise HTTPException(422, f"Meta publish failed (code {code}): {msg}")
 
     except HTTPException:
         raise
@@ -413,6 +589,21 @@ async def publish_flow(fid: str, tenant: Tenant = Depends(get_active_tenant_from
         {"$set": {"status": "PUBLISHED", "meta_flow_id": meta_flow_id, "updated_at": datetime.utcnow()}},
     )
     return {"success": True, "meta_flow_id": meta_flow_id, "status": "PUBLISHED"}
+
+
+@router.get("/{fid}/debug-json")
+async def debug_flow_json(fid: str, tenant: Tenant = Depends(get_tenant_from_token)):
+    """Return the generated WhatsApp Flows JSON that would be uploaded to Meta."""
+    from app.database import db
+    from bson import ObjectId
+    tid = str(tenant.id)
+    doc = await db.flows.find_one({"_id": ObjectId(fid), "tenant_id": tid})
+    if not doc:
+        raise HTTPException(404, "Flow not found")
+    screens = doc.get("screens", [])
+    if not screens:
+        raise HTTPException(422, "Flow has no screens")
+    return screens_to_flow_json(screens)
 
 
 @router.get("/{fid}/preview")
@@ -496,7 +687,14 @@ async def send_flow_to_contacts(
 
     # ── Send to each contact ──────────────────────────────────────────────────
     client  = get_wa_client(tenant)
-    first_screen = body.flow_screen or (doc["screens"][0]["id"] if doc.get("screens") else "WELCOME")
+    # Map stored screen ID → positional Meta ID (SCREEN_A, SCREEN_B, ...)
+    stored_screens = doc.get("screens", [])
+    target_stored  = (body.flow_screen or "").strip()
+    if target_stored and stored_screens:
+        _idx = next((i for i, s in enumerate(stored_screens) if s.get("id") == target_stored), 0)
+    else:
+        _idx = 0
+    first_screen = _alpha_id(_idx) if stored_screens else ""
 
     sent = failed = 0
     errors = []
@@ -519,8 +717,11 @@ async def send_flow_to_contacts(
                 first_screen = first_screen,
             )
             if "error" in resp:
+                err_msg = resp["error"].get("message", str(resp["error"]))
+                err_code = resp["error"].get("code", "")
+                log.error(f"[FLOWS SEND] WA error code={err_code} to={wa_id}: {err_msg}")
                 failed += 1
-                errors.append({"wa_id": wa_id, "error": resp["error"].get("message", "")})
+                errors.append({"wa_id": wa_id, "error": f"({err_code}) {err_msg}"})
                 continue
 
             # Record outbound message
@@ -554,6 +755,27 @@ async def send_flow_to_contacts(
         "total":   len(contacts),
         "errors":  errors[:10],  # cap to first 10 for brevity
     }
+
+
+@router.post("/{fid}/reset-meta-id")
+async def reset_meta_id(fid: str, tenant: Tenant = Depends(get_active_tenant_from_token)):
+    """
+    Clear the stored meta_flow_id so the next publish registers a fresh flow on Meta.
+    Use this when the existing Meta flow is stuck in DEPRECATED/BLOCKED state.
+    """
+    from app.database import db
+    from bson import ObjectId
+    tid = str(tenant.id)
+    doc = await db.flows.find_one({"_id": ObjectId(fid), "tenant_id": tid})
+    if not doc:
+        raise HTTPException(404, "Flow not found")
+    old_id = doc.get("meta_flow_id")
+    await db.flows.update_one(
+        {"_id": ObjectId(fid)},
+        {"$set": {"meta_flow_id": None, "status": "DRAFT", "updated_at": datetime.utcnow()}},
+    )
+    log.info(f"[FLOWS] Reset meta_flow_id (was {old_id}) for flow {fid}")
+    return {"success": True, "old_meta_flow_id": old_id, "message": "Meta ID cleared. Next publish will register a fresh flow."}
 
 
 @router.delete("/{fid}")
